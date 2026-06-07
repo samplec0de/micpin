@@ -52,12 +52,23 @@ Consequences of these rules:
 
 - When the pinned device **reconnects**, the next event triggers rule 3 and the
   input snaps back to it.
-- A manual change in **System Settings** is treated as an unwanted switch and is
-  reverted by rule 3 (while the pinned device is present). The only intended way
-  to change the active microphone is to **re-pin** in MicPin (which writes a new
-  pinned UID and immediately applies it).
-- `reconcile()` is **idempotent**: rule 4 means our own write does not cause a
-  correcting write, so the listener feedback loop terminates after one set.
+- A switch away from the pinned device is reverted by rule 3 while the pinned
+  device is present. This applies to **any** source: a manual change in System
+  Settings *and* another app setting the default input (e.g. Zoom/Teams
+  "use this mic"). MicPin will pull it back within the coalescing window — this
+  reach is intended (it is the whole point), and is documented so it is not later
+  filed as a bug. The only intended way to change the active microphone is to
+  **re-pin** in MicPin (which writes a new pinned UID and immediately applies it).
+- **Feedback-loop termination.** Our own `AudioObjectSetPropertyData` *does* fire
+  the `DefaultInputDevice` listener. Termination does not rely on the write being
+  silent; it relies on `reconcile()` always re-reading the *current* default
+  fresh and on rule 4. Once the property settles to the pinned device, the next
+  `reconcile()` reads `current == pinned` and writes nothing. Coalescing
+  (below) absorbs the transient where a re-read might briefly still return the
+  old value, so the loop converges rather than oscillating.
+- **Error policy.** `reconcile()` is best-effort and idempotent across retries.
+  `setDefaultInput` throwing (device vanished mid-switch) is swallowed; the next
+  event re-runs `reconcile()`. Reconcile never propagates an error to a crash.
 
 ### Event sources
 
@@ -67,8 +78,12 @@ CoreAudio property listeners on the global object (`kAudioObjectSystemObject`):
   changes (auto-switch, manual change, or our own write).
 - `kAudioHardwarePropertyDevices` — fires when devices are added/removed.
 
-A short coalescing window (≈100 ms) collapses bursts of events (a single
-Bluetooth connect emits several) into one `reconcile()` call.
+A short coalescing window (≈100 ms, **trailing debounce** — reset on each event,
+fire after quiet) collapses bursts of events (a single Bluetooth connect emits
+several) into one `reconcile()` call. Events carry no payload into reconcile;
+`reconcile()` always re-reads fresh device-list and default-input state at fire
+time (never acts on a captured event snapshot). The `onChange` closure in the
+protocol below is intentionally parameterless to enforce this.
 
 ## Architecture
 
@@ -111,17 +126,35 @@ protocol AudioSystem: AnyObject {
 
 ## CoreAudio details
 
+Every `AudioObjectPropertyAddress` uses **`kAudioObjectPropertyElementMain`**
+(the `…ElementMaster` symbol is deprecated since macOS 12 and is a build error
+under Swift 6 strict settings).
+
 - **Enumerate inputs:** read `kAudioHardwarePropertyDevices` → for each device,
   read `kAudioDevicePropertyStreamConfiguration` on the **input** scope; keep
-  devices with ≥1 input channel.
+  devices with ≥1 input channel. Aggregate devices that expose input channels
+  are valid and intentionally pinnable.
 - **Per-device metadata:** `kAudioDevicePropertyDeviceUID` (UID),
-  `kAudioObjectPropertyName` (display name),
-  `kAudioDevicePropertyTransportType` (to label Bluetooth/USB/built-in).
+  `kAudioObjectPropertyName` (display name, read on the **global** scope; take
+  ownership of the returned `CFString`; if null/empty, fall back to the UID so
+  the UI label is never blank), `kAudioDevicePropertyTransportType` (a `UInt32`
+  constant — `kAudioDeviceTransportTypeBluetooth` / `…USB` / `…BuiltIn` / etc.;
+  handle Unknown/Virtual/Aggregate for the label).
 - **Read default input:** `kAudioHardwarePropertyDefaultInputDevice`
   (global scope) → `AudioDeviceID` → resolve to UID.
-- **Set default input:** translate pinned UID → current `AudioDeviceID` via
-  `kAudioHardwarePropertyTranslateUIDToDevice`, then
-  `AudioObjectSetPropertyData` on `kAudioHardwarePropertyDefaultInputDevice`.
+- **UID → device (presence + set):** `kAudioHardwarePropertyTranslateUIDToDevice`.
+  The UID is passed as the **qualifier** (`inQualifierDataSize`/`inQualifierData`
+  pointing at a `CFStringRef`), not in the output buffer. On a UID that matches
+  no current device it returns **`kAudioObjectUnknown` (0)**, *not* an error — so
+  the present/absent decision (reconcile rules 2 vs 3) compares the result
+  against `kAudioObjectUnknown` rather than relying on an `OSStatus`. If two
+  devices report the same UID (some virtual drivers), CoreAudio resolves the
+  first match; we do not disambiguate.
+- **Set default input:** translate pinned UID → `AudioDeviceID` (guard against
+  `kAudioObjectUnknown`), then `AudioObjectSetPropertyData` on
+  `kAudioHardwarePropertyDefaultInputDevice`. A failing set (device dropped
+  between the presence check and the write) is **non-fatal**: it is logged and
+  ignored, and the next event re-reconciles (see error policy below).
 - Listeners registered with `AudioObjectAddPropertyListenerBlock` on a dedicated
   serial dispatch queue; `onChange` is hopped to the main actor for UI.
 
@@ -182,26 +215,40 @@ A small, fixed-size window opened from the menu. Contents:
 - **Start at Login** toggle (bound to `LoginItem`).
 - Footer: app name + version.
 
-Activation policy: app launches as `.accessory` (menu-bar only, no Dock icon).
-When the settings window opens, switch to `.regular` and activate; when it
-closes, return to `.accessory`.
+The window is an explicitly managed `NSWindow` hosting the SwiftUI view via
+`NSHostingController` — **not** the SwiftUI `Settings {}` scene, which is awkward
+to open programmatically from an `NSStatusItem` menu across OS versions.
+
+Activation policy: app launches as `.accessory` (menu-bar only, no Dock icon;
+`LSUIElement = true` in Info.plist coexists with the runtime `.regular` switch).
+When the settings window opens, switch to `.regular`, call `NSApp.activate()`,
+and order the window front (otherwise it can appear behind other apps). On close
+(`NSWindowDelegate.windowWillClose`), revert to `.accessory` on a
+`DispatchQueue.main.async` hop to avoid a momentary ghost Dock icon.
 
 ## Persistence
 
 `UserDefaults` (app suite):
 
 - `pinnedInputDeviceUID: String?`
-- `pinnedInputDeviceName: String?` (display only, for the disconnected case)
+- `pinnedInputDeviceName: String?` (display only, for the disconnected case;
+  refreshed whenever the pinned device is next seen present, since macOS lets
+  users rename devices)
 
 `LoginItem` reads its state from `SMAppService.mainApp.status`, not UserDefaults.
 
 ## Login item
 
 `SMAppService.mainApp.register()` / `.unregister()` (macOS 13+). Caveat for a
-self-built, ad-hoc-signed app: registration can be unreliable until the `.app`
-lives in `/Applications`. README documents this; the toggle surfaces failures
-rather than failing silently. (LaunchAgent plist is a documented fallback if
-needed — not implemented in v1.)
+self-built, ad-hoc-signed app: registration is keyed off the signed bundle
+location and can be unreliable until the `.app` lives in `/Applications`;
+`SMAppService.mainApp.status` may read `.notRegistered` right after a successful
+`register()` until the app is relaunched from `/Applications`. Therefore the
+toggle **re-queries `.status` each time the settings window opens** (never caches
+it) and surfaces failures inline in the settings window rather than failing
+silently. README documents this. A LaunchAgent plist pointing at the
+`/Applications` path is a documented fallback (in practice often *more* reliable
+for self-built apps) — not implemented in v1.
 
 ## Build & packaging
 
@@ -210,9 +257,16 @@ Swift Package Manager; no `.xcodeproj` checked in (openable in Xcode regardless)
 - `Package.swift`: `MicPinCore` library target, `MicPin` executable target,
   `MicPinCoreTests` test target. Platform `.macOS(.v26)`.
 - `scripts/bundle.sh`: `swift build -c release`, then assemble
-  `MicPin.app/Contents/{MacOS/MicPin, Resources/, Info.plist}`. `Info.plist`
-  sets `LSUIElement = true`, bundle id `com.micpin.app`, version, and the SF
-  Symbol-based menu bar icon. Ad-hoc codesign (`codesign -s -`) so it launches.
+  `MicPin.app/Contents/{MacOS/MicPin, Resources/, Info.plist}` with the
+  executable placed at `Contents/MacOS/MicPin` matching `CFBundleExecutable`.
+  `Info.plist` keys: `CFBundleIdentifier = com.micpin.app`, `CFBundleExecutable`,
+  `CFBundleName`, `CFBundlePackageType = APPL`, `CFBundleShortVersionString`,
+  `CFBundleVersion`, `LSMinimumSystemVersion = 26.0`, `LSUIElement = true`. The
+  menu bar icon is a system SF Symbol loaded at runtime via
+  `NSImage(systemSymbolName:)` (no asset bundling needed), not an Info.plist
+  concern. Ad-hoc codesign the single bundle (`codesign -s -`, no `--deep`)
+  **after** the Info.plist and executable are in place; re-running `swift build`
+  invalidates the signature, so re-sign each time.
 - README documents: build, bundle, move to `/Applications`, enable Start at
   Login, and the `xcode-select` note (full Xcode vs Command Line Tools).
 
@@ -220,8 +274,13 @@ Swift Package Manager; no `.xcodeproj` checked in (openable in Xcode regardless)
 
 - `PinControllerTests` against `FakeAudioSystem`, covering each behavior rule:
   no pin → no-op; pin absent → no-op; pin present & wrong → one set; pin present
-  & correct → no set (idempotency / no feedback loop); reconnect → restores;
-  manual switch away → reverted; re-pin → new UID applied.
+  & correct → no set; reconnect → restores; manual switch away → reverted;
+  re-pin → new UID applied.
+- **Feedback-loop test:** the `FakeAudioSystem`'s `setDefaultInput` synthesizes
+  an `onChange` (as the real listener would); assert `reconcile()` converges to
+  the pinned device with a finite number of sets and no infinite recursion.
+- **Failure test:** `setDefaultInput` throws → `reconcile()` stays stable (no
+  crash, no propagation) and a subsequent event reconciles cleanly.
 - `CoreAudioSystem` is a thin, hardware-touching adapter exercised by manual
   smoke testing (documented checklist), not unit tests.
 - Test-driven: write the failing `PinController` tests before its implementation.
