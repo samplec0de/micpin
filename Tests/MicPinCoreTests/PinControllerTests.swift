@@ -17,7 +17,7 @@ import Testing
 @MainActor
 @Test func noPinDoesNothing() {
     let built = AudioDevice.test("BUILTIN", "MacBook Mic", .builtIn)
-    let bt = AudioDevice.test("BT", "Huawei", .bluetooth)
+    let bt = AudioDevice.test("BT", "BT Headset", .bluetooth)
     let audio = FakeAudioSystem(devices: [built, bt], defaultUID: "BT")
     let controller = PinController(audio: audio, store: MemoryPinStore())
     controller.start()
@@ -27,7 +27,7 @@ import Testing
 
 @MainActor
 @Test func pinAbsentDeviceDoesNotOverride() {
-    let bt = AudioDevice.test("BT", "Huawei", .bluetooth)
+    let bt = AudioDevice.test("BT", "BT Headset", .bluetooth)
     let audio = FakeAudioSystem(devices: [bt], defaultUID: "BT")
     let store = MemoryPinStore()
     store.pinnedUID = "BUILTIN"        // pinned device not in device list
@@ -40,7 +40,7 @@ import Testing
 @MainActor
 @Test func pinPresentAndWrongSwitchesOnce() {
     let built = AudioDevice.test("BUILTIN", "MacBook Mic", .builtIn)
-    let bt = AudioDevice.test("BT", "Huawei", .bluetooth)
+    let bt = AudioDevice.test("BT", "BT Headset", .bluetooth)
     let audio = FakeAudioSystem(devices: [built, bt], defaultUID: "BT")
     let controller = PinController(audio: audio, store: MemoryPinStore())
     controller.pin(uid: "BUILTIN")
@@ -62,7 +62,7 @@ import Testing
 @MainActor
 @Test func autoSwitchAwayIsReverted() {
     let built = AudioDevice.test("BUILTIN", "MacBook Mic", .builtIn)
-    let bt = AudioDevice.test("BT", "Huawei", .bluetooth)
+    let bt = AudioDevice.test("BT", "BT Headset", .bluetooth)
     let audio = FakeAudioSystem(devices: [built], defaultUID: "BUILTIN")
     let controller = PinController(audio: audio, store: MemoryPinStore())
     controller.pin(uid: "BUILTIN")
@@ -76,7 +76,7 @@ import Testing
 @MainActor
 @Test func pinnedReconnectRestores() {
     let built = AudioDevice.test("BUILTIN", "MacBook Mic", .builtIn)
-    let bt = AudioDevice.test("BT", "Huawei", .bluetooth)
+    let bt = AudioDevice.test("BT", "BT Headset", .bluetooth)
     let audio = FakeAudioSystem(devices: [bt], defaultUID: "BT")
     let store = MemoryPinStore()
     store.pinnedUID = "BUILTIN"
@@ -94,7 +94,7 @@ import Testing
     // setDefaultInput fires onChange (as the real listener does). Verify the
     // loop terminates after a single set rather than oscillating.
     let built = AudioDevice.test("BUILTIN", "MacBook Mic", .builtIn)
-    let bt = AudioDevice.test("BT", "Huawei", .bluetooth)
+    let bt = AudioDevice.test("BT", "BT Headset", .bluetooth)
     let audio = FakeAudioSystem(devices: [built, bt], defaultUID: "BT")
     audio.fireOnChangeOnSet = true
     let controller = PinController(audio: audio, store: MemoryPinStore())

@@ -7,7 +7,7 @@
 ## Problem
 
 macOS automatically switches the **default audio input** to a Bluetooth
-headset's microphone the moment it connects (e.g. Huawei FreeBuds). This both
+headset's microphone the moment it connects. This both
 overrides the user's preferred microphone and forces the headset into the
 low-quality HFP profile (degrading playback). macOS offers no built-in way to
 pin a specific input device so it survives reconnections and the connection of
@@ -185,9 +185,9 @@ SF Symbol icon (e.g. `mic.fill` / `pin.fill` overlay when a pin is active). Menu
 ```
 Pinned input
   ✓ MacBook Microphone          (built-in)
-    HUAWEI FreeBuds             (Bluetooth)
+    BT Headset                  (Bluetooth)
     External USB Mic            (USB)
-  HUAWEI FreeBuds — disconnected  [dimmed, shown only if it is the pinned-but-absent device]
+  BT Headset — disconnected       [dimmed, shown only if it is the pinned-but-absent device]
 ─────────────────────────────
   Unpin (follow system)
 ─────────────────────────────
@@ -290,8 +290,8 @@ Swift Package Manager; no `.xcodeproj` checked in (openable in Xcode regardless)
 The repository must contain **no** personal data: no hardcoded user paths
 (`/Users/...`), no machine names, no personal email addresses, no device serials.
 Bundle id is the neutral `com.micpin.app`. LICENSE is MIT with a neutral
-copyright holder ("MicPin Authors"). Real device names (e.g. "HUAWEI FreeBuds")
-appear only at runtime from the live system, never committed.
+copyright holder ("MicPin Authors"). Real device names appear only at runtime
+from the live system, never committed.
 
 ## Out of scope / possible future work
 
