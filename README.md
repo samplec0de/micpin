@@ -8,6 +8,10 @@ moment it connects (which also drops the headset into low-quality HFP). MicPin
 keeps your chosen mic as the default and re-asserts it whenever something
 switches away.
 
+<p align="center">
+  <img src="assets/screenshot-menu.png" alt="MicPin menu bar menu — pick a microphone to pin; the built-in mic is pinned" width="440">
+</p>
+
 ## Install
 
 1. Download `MicPin-<version>.dmg` from the
